@@ -3,7 +3,7 @@ uvicorn==0.24.0
 python-dotenv==1.0.0
 jinja2==3.1.2
 aiofiles==23.2.1
-lyzr>=0.1.0
+lyzr
 pymongo==4.9.0
 requests==2.31.0
 motor==3.6.0
