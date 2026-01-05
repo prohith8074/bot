@@ -29,6 +29,7 @@ class ConnectionManager:
         self.active_connections: List[WebSocket] = []
         self.message_queue = queue.Queue()
         self.event_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._lock = asyncio.Lock()
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop):
         """Set the event loop for broadcasting"""
@@ -36,47 +37,61 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        async with self._lock:
+            self.active_connections.append(websocket)
         
         # Set event loop if not set
         if self.event_loop is None:
             self.event_loop = asyncio.get_event_loop()
 
     def disconnect(self, websocket: WebSocket):
+        # Optimistic removal to avoid locking if possible
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
-        """Broadcast message to all connected clients"""
-        # Serialize message to handle datetime objects
+        """
+        Broadcast message to all connected clients in parallel (Fail-Fast).
+        Uses asyncio.gather to ensure one slow client doesn't block others.
+        """
+        if not self.active_connections:
+            return
+
+        # Serialize message once
         serialized_message = serialize_message(message)
         
-        logger.info(f"📢 Broadcasting WS message: {serialized_message.get('type')} to {len(self.active_connections)} clients")
-        
-        disconnected = []
+        # Create send tasks for all connections
+        # We start tasks immediately rather than awaiting them sequentially
+        tasks = []
         for connection in self.active_connections:
-            try:
-                await connection.send_json(serialized_message)
-            except Exception as e:
-                logger.error(f"❌ Error sending message to WebSocket client: {e}")
-                disconnected.append(connection)
+            tasks.append(self._safe_send(connection, serialized_message))
         
-        # Remove disconnected connections
-        for conn in disconnected:
-            self.disconnect(conn)
+        # Run all sends in parallel and ignore errors (fail-fast)
+        # return_exceptions=True prevents one error from crashing the gather
+        await asyncio.gather(*tasks, return_exceptions=True)
     
+    async def _safe_send(self, connection: WebSocket, message: dict):
+        """Send message with individual error handling to prevent blocking"""
+        try:
+            # Add a short timeout to prevent hanging on a dead connection
+            await asyncio.wait_for(connection.send_json(message), timeout=0.5)
+        except Exception as e:
+            # Log only verbose errors if needed, otherwise silent fail for performance
+            # logger.warning(f"⚠️ WS Send Error: {e}")
+            self.disconnect(connection)
+
     def broadcast_sync(self, message: dict):
-        """Broadcast message from a synchronous context (thread-safe)"""
-        logger.info(f"🔄 Sync Broadcast: {message.get('type')} - Loop running: {self.event_loop and self.event_loop.is_running()}")
+        """
+        Fire-and-forget broadcast from synchronous context.
+        Does NOT block the caller. Schedules task on the event loop.
+        """
         if self.event_loop and self.event_loop.is_running():
-            # Schedule broadcast on the event loop
-            asyncio.run_coroutine_threadsafe(
-                self.broadcast(message),
-                self.event_loop
-            )
+            # Schedule task immediately without waiting
+            self.event_loop.create_task(self.broadcast(message))
+            logger.debug(f"⚡ Sync broadcast scheduled (fire-and-forget): {message.get('type')}")
         else:
-            # Queue the message if loop not available
-            logger.warning(f"⚠️ Event loop not running or not set, queuing message: {message.get('type')}")
+            # Fallback for startup/shutdown scenarios
+            logger.debug(f"⚠️ Event loop not ready, queuing: {message.get('type')}")
             self.message_queue.put(message)
 
 # Global connection manager

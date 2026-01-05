@@ -28,6 +28,35 @@ class AgentUpdateRequest(BaseModel):
     phone_number: str
     email: str
 
+def clean_phone_number(phone: str) -> str:
+    """
+    Clean and format phone number to +91XXXXXXXXXX format.
+    
+    Examples:
+    - "9874563210" -> "+919874563210"
+    - "+91 98745 63210" -> "+919874563210"
+    - "++91 98745 63210" -> "+919874563210"
+    - "+919874563210" -> "+919874563210"
+    - "8569742135" -> "+918569742135"
+    """
+    if not phone:
+        return ""
+    
+    # Remove all non-digit characters
+    digits_only = "".join(c for c in phone if c.isdigit())
+    
+    # If empty after cleaning, return empty
+    if not digits_only:
+        return ""
+    
+    # Remove leading 91 if present (we'll add it back with +)
+    if digits_only.startswith("91") and len(digits_only) > 10:
+        digits_only = digits_only[2:]
+    
+    # Now we should have 10 digits for Indian mobile
+    # Add +91 prefix
+    return "+91" + digits_only
+
 def get_agents_collection(db):
     """Helper function to get the agents collection"""
     collection_names = db.list_collection_names()
@@ -92,6 +121,11 @@ def create_user(user: AgentCreateRequest):
         if not user.email or not user.email.strip():
             raise HTTPException(status_code=400, detail="Email is required")
         
+        # Clean phone number
+        cleaned_phone = clean_phone_number(user.phone_number)
+        if len(cleaned_phone) < 8: # Basic length check
+             raise HTTPException(status_code=400, detail="Invalid phone number format")
+
         # Check if agent_code already exists
         existing_code = agents_collection.find_one({"agent_code": user.agent_code})
         if existing_code:
@@ -99,10 +133,10 @@ def create_user(user: AgentCreateRequest):
             raise HTTPException(status_code=400, detail=f"Agent code {user.agent_code} already exists")
         
         # Check if phone_number already exists
-        existing_phone = agents_collection.find_one({"phone_number": user.phone_number})
+        existing_phone = agents_collection.find_one({"phone_number": cleaned_phone})
         if existing_phone:
-            logger.warning(f"⚠️ Phone number {user.phone_number} already exists")
-            raise HTTPException(status_code=400, detail=f"Phone number {user.phone_number} already exists")
+            logger.warning(f"⚠️ Phone number {cleaned_phone} already exists")
+            raise HTTPException(status_code=400, detail=f"Phone number {cleaned_phone} already exists")
         
         # Check if email already exists
         existing_email = agents_collection.find_one({"email": user.email.lower()})
@@ -115,7 +149,7 @@ def create_user(user: AgentCreateRequest):
             "agent_name": user.agent_name.strip(),
             "agent_code": user.agent_code.strip(),
             "role": user.role.strip(),
-            "phone_number": user.phone_number.strip(),
+            "phone_number": cleaned_phone,
             "email": user.email.lower().strip(),
             "createdAt": datetime.now(),
             "updatedAt": datetime.now()
@@ -134,7 +168,7 @@ def create_user(user: AgentCreateRequest):
                     "password": hash_password("Password@123"),
                     "firstName": user.agent_name.strip().split()[0] if user.agent_name.strip() else "",
                     "lastName": " ".join(user.agent_name.strip().split()[1:]) if len(user.agent_name.strip().split()) > 1 else "",
-                    "phone": user.phone_number.strip(),
+                    "phone": cleaned_phone,
                     "bio": "",
                     "isAdmin": False,
                     "isActive": True,
@@ -185,6 +219,11 @@ def update_user(user_id: str, user: AgentUpdateRequest):
             raise HTTPException(status_code=400, detail="Phone Number is required")
         if not user.email or not user.email.strip():
             raise HTTPException(status_code=400, detail="Email is required")
+            
+        # Clean phone number
+        cleaned_phone = clean_phone_number(user.phone_number)
+        if len(cleaned_phone) < 8:
+             raise HTTPException(status_code=400, detail="Invalid phone number format")
         
         # Check if new agent_code conflicts with existing (excluding current agent)
         if user.agent_code.strip() != existing.get("agent_code", ""):
@@ -193,10 +232,10 @@ def update_user(user_id: str, user: AgentUpdateRequest):
                 raise HTTPException(status_code=400, detail=f"Agent code {user.agent_code} already exists")
         
         # Check if new phone_number conflicts with existing (excluding current agent)
-        if user.phone_number.strip() != existing.get("phone_number", ""):
-            conflict_phone = agents_collection.find_one({"phone_number": user.phone_number.strip()})
+        if cleaned_phone != existing.get("phone_number", ""):
+            conflict_phone = agents_collection.find_one({"phone_number": cleaned_phone})
             if conflict_phone and str(conflict_phone["_id"]) != user_id:
-                raise HTTPException(status_code=400, detail=f"Phone number {user.phone_number} already exists")
+                raise HTTPException(status_code=400, detail=f"Phone number {cleaned_phone} already exists")
         
         # Check if new email conflicts with existing (excluding current agent)
         if user.email.lower().strip() != existing.get("email", "").lower():
@@ -209,7 +248,7 @@ def update_user(user_id: str, user: AgentUpdateRequest):
             "agent_name": user.agent_name.strip(),
             "agent_code": user.agent_code.strip(),
             "role": user.role.strip(),
-            "phone_number": user.phone_number.strip(),
+            "phone_number": cleaned_phone,
             "email": user.email.lower().strip(),
             "updatedAt": datetime.now()
         }

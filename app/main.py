@@ -1,6 +1,5 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from app.routes import chat, whatsapp, rag, agent_config, dashboard, knowledge, feedback_route, agents_route, agents_stats, users_route, auth, websocket, health
 from app.config.logging_config import setup_logging, get_logger
@@ -73,13 +72,22 @@ app = FastAPI(title="Star Health Bot API")
 logger.info("🚀 Star Health Bot API Starting...")
 
 # CORS middleware
+# 🔒 PRODUCTION: Configure CORS origins from environment for security
+# Set CORS_ORIGINS="https://yourdomain.com,https://api.yourdomain.com" in production
+cors_origins = os.getenv("CORS_ORIGINS", "*")
+if cors_origins == "*":
+    allowed_origins = ["*"]
+else:
+    allowed_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Routes
 app.include_router(chat.router, prefix="/api", tags=["chat"])
@@ -370,9 +378,8 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={
             "status": "error",
-            "message": "Internal server error",
-            "detail": str(exc),
-            "trace": str(type(exc).__name__)
+            "message": "Internal server error"
+            # 🔒 SECURITY: Never expose error details to clients
         }
     )
 

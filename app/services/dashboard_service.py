@@ -165,7 +165,7 @@ class DashboardService:
                     })
                     logger.debug(f"📡 WebSocket event broadcasted: {event_type}")
             except Exception as e:
-                logger.warning(f"⚠️ Could not broadcast WebSocket event: {e}")
+                logger.debug(f"⚠️ Could not broadcast WebSocket event: {e}")
             
             return result.inserted_id
         except Exception as e:
@@ -415,15 +415,27 @@ class DashboardService:
                 logger.info(f"✅ Feedback updated for session: {session_id}")
 
             # 🔒 CACHE INVALIDATION: Ensure fresh data on next poll
+            logger.info("🔄 Invalidating dashboard cache to reflect feedback update...")
             invalidate_cache()
             
             # 🔒 OPTIMIZED: WebSocket refresh to notify frontend
             try:
                 ws_manager = get_websocket_manager()
                 if ws_manager:
+                    # Broadcast generic refresh to ensure all components reload
                     ws_manager.broadcast_sync({
                         "type": "dashboard:refresh",
                         "reason": "feedback_updated"
+                    })
+                    # Also broadcast specific feedback update for components listening to specific events
+                    ws_manager.broadcast_sync({
+                        "type": "dashboard:feedback_update",
+                        "data": {
+                            "session_id": session_id,
+                            "feedback": feedback,
+                            "username": username,
+                            "agent_code": agent_code
+                        }
                     })
                     logger.debug(f"📡 WebSocket refresh broadcasted: feedback_updated")
             except Exception as e:

@@ -212,14 +212,43 @@ async def handle_chat(request: ChatRequest):
             # Get agent ID based on configuration (customized or default)
             agent_id = await lyzr_service.get_agent_id(result["agent_type"])
             
+            # Clean username - remove trailing numbers (e.g. "Rohith 1" -> "Rohith")
+            cleaned_username = username
+            if username and username != 'N/A':
+                import re
+                cleaned_username = re.sub(r'\s+\d+$', '', username)
+                logger.info(f"🧹 Cleaned username: '{username}' -> '{cleaned_username}'")
+
             # Prepare message to send to Lyzr - include only username (not agent code)
+            # Prepare message to send to Lyzr
+            # LOGIC CHANGE: Only send "User: {username}" for the FIRST message to the agent.
+            # Subsequent messages should be just the user's text to reduce latency/tokens and avoid repetition.
+            
+            # Check if we have already sent the initial message for this agent session
+            first_message_sent = state.get("first_message_sent", False)
+            current_agent_type = result.get("agent_type")
+            previous_agent_type = state.get("previous_agent_type")
+            
+            # If agent type changed, reset first_message_sent
+            if current_agent_type != previous_agent_type:
+                first_message_sent = False
+                
             message_to_send = request.message
-            if result.get("agent_type") in ("product_recommendation", "sales_pitch") and username != 'N/A':
+            
+            # Only prepend username if this is the FIRST message to this agent
+            if not first_message_sent and result.get("agent_type") in ("product_recommendation", "sales_pitch") and username != 'N/A':
                 # Prepend only username to the message (agent code is not sent to Lyzr)
-                message_to_send = f"User: {username}\n\n{request.message}"
-                logger.info(f"📤 Message includes username (agent code not sent to Lyzr)")
-                logger.info(f"   Original message: {request.message[:100]}...")
+                message_to_send = f"User: {cleaned_username}\n\n{request.message}"
+                logger.info(f"📤 FIRST MESSAGE: Including username '{cleaned_username}'")
                 logger.info(f"   Enhanced message: {message_to_send[:150]}...")
+                
+                # Update state to mark first message as sent
+                result["new_state"]["first_message_sent"] = True
+                result["new_state"]["previous_agent_type"] = current_agent_type
+                # We need to update the session state immediately to reflect this change
+                await session_service.update_session_state(session_id, result["new_state"])
+            else:
+                logger.info(f"📤 SUBSEQUENT MESSAGE: Sending raw user text only")
             
             # Use get_agent_response with custom prompts
             try:
@@ -227,7 +256,7 @@ async def handle_chat(request: ChatRequest):
                     session_id=session_id,
                     agent_type=result["agent_type"],
                     message=message_to_send,
-                    username=username if username != 'N/A' else None,
+                    username=cleaned_username if username != 'N/A' else None,
                     agent_code=result.get('agent_code'),
                     custom_role=custom_role,
                     custom_goal=custom_goal,

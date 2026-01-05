@@ -88,7 +88,12 @@ def get_lyzr_session_id(session_id: str, agent_type: str) -> str:
     First checks database, then falls back to in-memory cache.
     Returns None if session doesn't exist.
     """
-    # Try to get from database using session_id and agent_type
+    # First check in-memory cache (fastest)
+    session_key = f"{session_id}:{agent_type}"
+    if session_key in _lyzr_sessions:
+        return _lyzr_sessions[session_key]
+
+    # Then try to get from database using session_id and agent_type
     try:
         db = get_database()
         session_doc = db.lyzr_sessions.find_one({
@@ -97,13 +102,15 @@ def get_lyzr_session_id(session_id: str, agent_type: str) -> str:
             "isActive": True
         })
         if session_doc:
-            return session_doc.get("lyzrSessionId")
+            lyzr_sid = session_doc.get("lyzrSessionId")
+            # Update cache
+            if lyzr_sid:
+                _lyzr_sessions[session_key] = lyzr_sid
+            return lyzr_sid
     except Exception as e:
         logger.debug(f"Error getting Lyzr session from DB: {e}")
     
-    # Fallback to in-memory (for backward compatibility during transition)
-    session_key = f"{session_id}:{agent_type}"
-    return _lyzr_sessions.get(session_key)
+    return None
 
 
 def log_step(step: str, message: str, data=None):
@@ -1104,12 +1111,14 @@ class LyzrService:
         
         logger.info(f"📥 Polling session {lyzr_session_id[:12]}... (GET method)")
         
-        for attempt in range(max_attempts):
-            if attempt > 0:
-                await asyncio.sleep(poll_interval / 1000.0)
-            
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+        # 🔥 OPTIMIZATION: Create client ONCE and reuse it for all polls
+        # This avoids repeated SSL handshakes and connection setup overhead
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for attempt in range(max_attempts):
+                if attempt > 0:
+                    await asyncio.sleep(poll_interval / 1000.0)
+                
+                try:
                     # Try GET request first (preferred - no POST overhead)
                     try:
                         response = await client.get(
@@ -1191,14 +1200,14 @@ class LyzrService:
                             }
                         continue
                         
-            except Exception as e:
-                logger.warning(f"⚠️ Poll error (attempt {attempt + 1}): {e}")
-                if attempt >= max_attempts - 1:
-                    return {
-                        "status": "failed",
-                        "error": str(e)
-                    }
-                continue
+                except Exception as e:
+                    logger.warning(f"⚠️ Poll error (attempt {attempt + 1}): {e}")
+                    if attempt >= max_attempts - 1:
+                        return {
+                            "status": "failed",
+                            "error": str(e)
+                        }
+                    continue
         
         # Timeout
         return {
@@ -1214,8 +1223,8 @@ class LyzrService:
         user_id: str = None,
         username: str = None,
         agent_code: str = None,
-        poll_interval: int = 2000,
-        max_attempts: int = 60
+        poll_interval: int = 1000,
+        max_attempts: int = 90
     ) -> dict:
         """
         Optimized agent call that:

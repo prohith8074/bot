@@ -207,12 +207,41 @@ async def _process_whatsapp_message(
                 logger.info(f"   Agent ID: {agent_id}")
                 logger.info(f"   User: {username}")
                 
-                # Prepare message to send to Lyzr - include only username (not agent code)
+                # Clean username - remove trailing numbers (e.g. "Rohith 1" -> "Rohith")
+                cleaned_username = username
+                if username and username != 'N/A':
+                    import re
+                    cleaned_username = re.sub(r'\s+\d+$', '', username)
+                    logger.info(f"🧹 Cleaned username: '{username}' -> '{cleaned_username}'")
+
+                # Prepare message to send to Lyzr
+                # LOGIC CHANGE: Only send "User: {username}" for the FIRST message to the agent.
+            
+                # Check if we have already sent the initial message for this agent session
+                first_message_sent = state.get("first_message_sent", False)
+                current_agent_type = result.get("agent_type")
+                previous_agent_type = state.get("previous_agent_type")
+            
+                # If agent type changed, reset first_message_sent
+                if current_agent_type != previous_agent_type:
+                    first_message_sent = False
+                
                 message_to_send = message_text
-                if result.get("agent_type") in ("product_recommendation", "sales_pitch") and username != 'N/A':
+            
+                if not first_message_sent and result.get("agent_type") in ("product_recommendation", "sales_pitch") and username != 'N/A':
                     # Prepend only username to the message (agent code is not sent to Lyzr)
-                    message_to_send = f"User: {username}\n\n{message_text}"
-                    logger.info(f"📤 Message includes username (agent code not sent to Lyzr)")
+                    message_to_send = f"User: {cleaned_username}\n\n{message_text}"
+                    logger.info(f"📤 FIRST MESSAGE: Including username '{cleaned_username}'")
+                    
+                    # Update state to mark first message as sent
+                    result["new_state"]["first_message_sent"] = True
+                    result["new_state"]["previous_agent_type"] = current_agent_type
+                    # We need to update the session state immediately to reflect this change
+                    # (Note: session_service.update_session_state is called later, but we update the dict passed to it)
+                    state["first_message_sent"] = True
+                    state["previous_agent_type"] = current_agent_type
+                else:
+                    logger.info(f"📤 SUBSEQUENT MESSAGE: Sending raw user text only")
 
                 # Call Agent - This remains awaited as we need the response text for the user
                 # 🔒 LATENCY FIX: Reduced poll_interval from 2000ms to 1000ms
@@ -220,8 +249,8 @@ async def _process_whatsapp_message(
                     agent_id=agent_id,
                     message=message_to_send,
                     session_id=session_id,
-                    user_id=username if username != 'N/A' else None,
-                    username=username if username != 'N/A' else None,
+                    user_id=cleaned_username if username != 'N/A' else None,
+                    username=cleaned_username if username != 'N/A' else None,
                     agent_code=result.get('agent_code'),
                     poll_interval=1000,  # 🔒 REDUCED: Was 2000ms, now 1000ms for faster response
                     max_attempts=90,     # 🔒 INCREASED: To maintain same total timeout (90s)

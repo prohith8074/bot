@@ -323,18 +323,6 @@ async def signin(response: Response, request: SignInRequest, background_tasks: B
         background_tasks.add_task(trigger_agents_stats_warmup)
         background_tasks.add_task(trigger_rag_warmup)
         
-        # 🔒 ADMIN-ONLY ACCESS: Check if user is admin before completing login (non-2FA path)
-        if not user.get("isAdmin", False):
-            logger.warning(f"⚠️ Non-admin user attempted login (no 2FA): {request.email}")
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "success": False,
-                    "code": "ADMIN_ACCESS_REQUIRED",
-                    "message": "Access restricted to administrators only. Please contact an admin to grant you access."
-                }
-            )
-        
         # Update last login
         db.login_details.update_one(
             {"_id": user["_id"]},
@@ -343,11 +331,6 @@ async def signin(response: Response, request: SignInRequest, background_tasks: B
         user["lastLogin"] = datetime.now()
         
         logger.info(f"✅ User signed in: {request.email}")
-        
-        # 🔒 PERFORMANCE: Proactive Dashboard Warmup
-        if background_tasks:
-            from app.routes.dashboard import trigger_dashboard_warmup
-            background_tasks.add_task(trigger_dashboard_warmup, 7)
         
         user_data = user_to_response(user)
         token = generate_jwt_token(user_data)

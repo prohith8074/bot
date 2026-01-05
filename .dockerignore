@@ -17,6 +17,15 @@ htmlcov/
 logs/
 debug.log
 
+# Debug and utility scripts (DO NOT deploy to production)
+admin.py
+debug_*.py
+inspect_*.py
+migrate_*.py
+verify_*.py
+scripts/check_rag_content.py
+scripts/seed_database.py
+
 # Test outputs
 *_test_output*.txt
 test_output.txt
